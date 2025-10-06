@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sec-ieeg"
+version = "0.0.1"
+description = "SEC iEEG Toolbox"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "nibabel",
+  "scikit-image",
+  "plotly",
+  "trimesh"
+]
+
+[project.optional-dependencies]
+vtk = ["vtk"]
+open3d = ["open3d>=0.17"]
+
+[project.scripts]
+sec-ieeg-localize = "sec_ieeg.cli.localize:main"
+sec-ieeg-viz = "sec_ieeg.cli.visualize:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sec_ieeg*"]
+
+[tool.setuptools.package-data]
+sec_ieeg = ["data/**/*"]

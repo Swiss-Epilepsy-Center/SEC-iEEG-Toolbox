@@ -1,0 +1,36 @@
+Electrode name,x,y,z,assigned location,assignment method,distance to ROI (mm),% neighborhood in region,other close regions
+A,7.21123,35.4233,31.2419,ctx-rh-superiorfrontal,labelmap,,77.77777777777777,
+A,11.506,35.1998,31.2036,Right-Cerebral-White-Matter,labelmap,,100.0,
+A,15.8503,34.9505,31.1624,Right-Cerebral-White-Matter,labelmap,,100.0,
+A,20.1729,34.688,31.1137,Right-Cerebral-White-Matter,labelmap,,100.0,
+A,24.4662,34.4101,31.0271,Right-Cerebral-White-Matter,labelmap,,96.29629629629629,ctx-rh-rostralmiddlefrontal (4%)
+A,28.7741,34.1088,30.8793,ctx-rh-rostralmiddlefrontal,labelmap,,77.77777777777777,
+A,33.1115,33.7873,30.6881,ctx-rh-rostralmiddlefrontal,labelmap,,55.55555555555556,
+A,37.4553,33.4515,30.4812,Right-Cerebral-White-Matter,labelmap,,59.25925925925926,ctx-rh-rostralmiddlefrontal (41%)
+A,41.7792,33.103,30.2736,ctx-rh-rostralmiddlefrontal,labelmap,,74.07407407407408,Right-Cerebral-White-Matter (26%)
+A,46.0653,32.7571,30.0852,ctx-rh-rostralmiddlefrontal,labelmap,,96.29629629629629,
+B,16.4085,15.6395,33.0902,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,16.5592,18.9135,35.6207,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,16.5952,22.1794,38.1582,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,16.5006,25.4196,40.6658,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,16.2837,28.6311,43.1293,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,15.9711,31.8185,45.5502,Right-Cerebral-White-Matter,labelmap,,100.0,
+B,15.5929,34.9749,47.9274,ctx-rh-superiorfrontal,labelmap,,66.66666666666667,Right-Cerebral-White-Matter (33%)
+B,15.1676,38.0697,50.2373,ctx-rh-superiorfrontal,labelmap,,81.48148148148148,
+B,14.6967,41.0563,52.4333,Unknown,labelmap,,0.0,
+B,14.1733,43.8951,54.4724,Unknown,labelmap,,0.0,
+C,36.2547,13.3265,-16.2042,ctx-rh-insula,labelmap,,96.29629629629629,
+C,36.0463,14.3063,-11.6461,ctx-rh-insula,labelmap,,100.0,
+C,35.8613,15.3055,-7.14511,ctx-rh-insula,labelmap,,96.29629629629629,Right-Cerebral-White-Matter (4%)
+C,35.7082,16.316,-2.69281,Right-Cerebral-White-Matter,labelmap,,51.851851851851855,ctx-rh-insula (48%)
+C,35.6627,17.3046,1.7332,ctx-rh-insula,labelmap,,100.0,
+C,35.8426,18.3031,6.15281,Unknown,labelmap,,0.0,ctx-rh-insula (7%)
+C,36.2376,19.3012,10.582,ctx-rh-parsopercularis,labelmap,,77.77777777777777,Right-Cerebral-White-Matter (15%)
+C,36.7566,20.2636,15.0431,Right-Cerebral-White-Matter,labelmap,,100.0,
+C,37.3081,21.1814,19.5293,Right-Cerebral-White-Matter,labelmap,,100.0,
+C,37.8237,22.0804,24.025,Right-Cerebral-White-Matter,labelmap,,62.96296296296296,ctx-rh-rostralmiddlefrontal (37%)
+C,38.2729,22.9764,28.5632,Right-Cerebral-White-Matter,labelmap,,100.0,
+C,38.6515,23.8722,33.1574,Right-Cerebral-White-Matter,labelmap,,100.0,
+C,38.9739,24.7846,37.7564,ctx-rh-caudalmiddlefrontal,labelmap,,59.25925925925926,"ctx-rh-rostralmiddlefrontal (22%), Right-Cerebral-White-Matter (7%)"
+C,39.2383,25.7217,42.3194,ctx-rh-caudalmiddlefrontal,labelmap,,62.96296296296296,ctx-rh-rostralmiddlefrontal (4%)
+C,39.4421,26.6635,46.8351,Unknown,labelmap,,0.0,ctx-rh-caudalmiddlefrontal (41%)
