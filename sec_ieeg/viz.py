@@ -37,18 +37,132 @@ def _pretty_elname(full: str) -> str:
     else:
         return el
 
-def _swatch_shape(fig, color, x, y, size=0.018, border="#666"):
-    shape = dict(
+# ---------- helpers ----------
+
+def pretty_roi_name(name: str) -> str:
+    """
+    Normalize ROI / fiber names:
+      'Left-Hippocampus' -> 'Left Hippocampus'
+      'BasalGanglia_l'   -> 'Left Basal Ganglia'
+      'MLF_r'            -> 'Right MLF'
+      'lh.Thalamus'      -> 'Left Thalamus'
+    """
+    n = str(name)
+
+    # left/right prefixes or suffixes
+    lr = None
+    if re.match(r"^(lh\.|left[-_\s])", n, flags=re.I): lr, n = "Left",  re.sub(r"^(lh\.|left[-_\s])", "", n, flags=re.I)
+    if re.match(r"^(rh\.|right[-_\s])", n, flags=re.I): lr, n = "Right", re.sub(r"^(rh\.|right[-_\s])", "", n, flags=re.I)
+    if re.search(r"([-_\s]l|_l)$", n, flags=re.I): lr, n = "Left",  re.sub(r"([-_\s]l|_l)$", "", n, flags=re.I)
+    if re.search(r"([-_\s]r|_r)$", n, flags=re.I): lr, n = "Right", re.sub(r"([-_\s]r|_r)$", "", n, flags=re.I)
+
+    # separators → space
+    n = n.replace("_", " ").replace("-", " ").replace(".", " ").strip()
+    # title case, but keep ALLCAPS tokens (e.g., MLF)
+    tokens = [t if t.isupper() else t.capitalize() for t in n.split()]
+    n = " ".join(tokens)
+    return f"{lr} {n}".strip() if lr else n
+
+def _ellipsis(s: str, n: int | None) -> str:
+    if n is None or len(s) <= n:
+        return s
+    return s[: max(0, n - 1)] + "…"
+
+def _tab20_palette() -> list[str]:
+    """Return 20 hex colors from matplotlib's tab20 (or a stable fallback)."""
+    try:
+        import matplotlib as mpl
+        import matplotlib.colors as mcolors
+
+        # Preferred in Matplotlib ≥3.7
+        if hasattr(mpl, "colormaps"):
+            cmap = mpl.colormaps.get_cmap("tab20")
+        else:  # Older Matplotlib
+            from matplotlib import cm
+            cmap = cm.get_cmap("tab20")
+
+        return [mcolors.to_hex(cmap(i / 20.0)) for i in range(20)]
+    except Exception:
+        # Stable fallback if matplotlib is unavailable
+        return [
+            "#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+            "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf",
+            "#aec7e8","#ffbb78","#98df8a","#ff9896","#c5b0d5",
+            "#c49c94","#f7b6d2","#c7c7c7","#dbdb8d","#9edae5"
+        ]
+
+def _assign_colors_if_missing(
+    roi_meshes: list[dict] | None,
+    fiber_bundles: dict[str, np.ndarray] | None,
+    user_fiber_colors: dict[str, str] | None,
+) -> tuple[list[dict] | None, dict[str, str]]:
+    """
+    Ensure ROI meshes have a 'color' and fibers have a color mapping.
+    Honors user-specified colors, then cycles tab20 for the rest.
+    """
+    palette = _tab20_palette()
+    color_map: dict[str, str] = {}
+    out_fiber_colors: dict[str, str] = {}
+
+    # harvest existing mesh colors (by name)
+    if roi_meshes:
+        for r in roi_meshes:
+            nm = r.get("name", "ROI")
+            c = r.get("color")
+            if isinstance(c, str):
+                color_map.setdefault(nm, c)
+
+    # harvest user fiber colors
+    if user_fiber_colors:
+        for k, v in user_fiber_colors.items():
+            color_map.setdefault(k, v)
+
+    # function to get next palette color
+    next_idx = 0
+    def _next_color():
+        nonlocal next_idx
+        c = palette[next_idx % len(palette)]
+        next_idx += 1
+        return c
+
+    # assign missing mesh colors
+    if roi_meshes:
+        for r in roi_meshes:
+            nm = r.get("name", "ROI")
+            if not r.get("color"):
+                c = color_map.get(nm) or _next_color()
+                r["color"] = c
+                color_map[nm] = c
+
+    # assign fiber colors
+    if fiber_bundles:
+        for nm in fiber_bundles.keys():
+            if user_fiber_colors and nm in user_fiber_colors:
+                out_fiber_colors[nm] = user_fiber_colors[nm]
+            else:
+                c = color_map.get(nm) or _next_color()
+                color_map[nm] = c
+                out_fiber_colors[nm] = c
+
+    return roi_meshes, out_fiber_colors
+
+def _swatch_shape(fig, color, x, y, size=0.018, border="white", valign="middle"):
+    # valign: "middle" | "top" | "bottom"
+    if valign == "middle":
+        y0, y1 = y - size/2, y + size/2
+    elif valign == "top":
+        y0, y1 = y - size, y
+    else:  # "bottom"
+        y0, y1 = y, y + size
+
+    fig.add_shape(dict(
         type="rect",
         xref="paper", yref="paper",
-        x0=x, y0=y - size*0.9,
-        x1=x + size, y1=y,
+        x0=x, y0=y0, x1=x + size, y1=y1,
         line=dict(color=border, width=1),
         fillcolor=color,
-        layer="above"      
-    )
-    fig.add_shape(shape)
-
+        layer="above",
+    ))
 
 def add_custom_legend_panel_checkboxes(
     fig,
@@ -56,46 +170,62 @@ def add_custom_legend_panel_checkboxes(
     item_indices,
     *,
     subitem_indices=None,
+    # anchor of the panel in paper coords
     panel_x: float = 1.02,
     panel_y: float = 1.00,
-    row_step: float = 0.1,
-    indent_dx: float = 0.1,
-    items_per_row: int = 10,   
-    col_dx: float = 0.2,      
+    # vertical spacing
+    vspace_in_group: float = 0.025,       # distance between items/rows inside a group
+    vspace_between_groups: float = 0.05,  # extra space after finishing each group
+    # horizontal layout
+    indent_lvl1: float = 0.012,           # indent for items under a group (2-level)
+    indent_lvl2: float = 0.024,           # indent for items under a subgroup (3-level)
+    items_per_row: int = 10,              # wrap items horizontally within a subgroup
+    hspace_item_col: float = 0.05,        # distance between item columns
+    hspace_check_to_swatch: float = 0.010,
+    hspace_swatch_to_text: float = 0.035,
+    swatch_size: float = 0.016,
+    # text & style
+    max_item_label_chars: int | None = 18,
     font_family: str = "Cambria",
     font_size: int = 13,
     colorize_item_label: bool = False,
+    # ensure there is enough room on the right side (pixels)
+    panel_margin_px: int = 280,
 ):
+    """
+    Build a checkbox panel with optional nested (group -> subgroup -> items) structure.
+
+    group_indices: dict[str, list[int]]
+        Top-level groups -> trace indices.
+    item_indices: dict[str, list[tuple[item_label, [trace_idxs...]]]]
+        2-level groups -> flat items.
+    subitem_indices: dict[str, dict[str, list[tuple[item_label, [trace_idxs...]]]]]
+        3-level groups -> { subgroup_label: [(item_label, [trace_idxs...]), ...] }.
+    """
+    import numpy as np
 
     subitem_indices = subitem_indices or {}
 
-    # ------- helpers -------
+    # ---------- helpers ----------
     def _infer_item_color(idx_list):
-
         if not idx_list:
             return "#888"
-
         tr = fig.data[idx_list[0]]
         col = None
-
         if getattr(tr, "marker", None) is not None:
             col = getattr(tr.marker, "color", None)
             if isinstance(col, (list, tuple, np.ndarray)):
                 col = None
-
         if not col and getattr(tr, "line", None) is not None:
             col = getattr(tr.line, "color", None)
-
         if not col and hasattr(tr, "color"):
             col = getattr(tr, "color", None)
-
         return col or "#888"
-
 
     def _checkbox_anno(x, y, checked=True):
         return dict(
             x=x, y=y, xref="paper", yref="paper",
-            xanchor="left", yanchor="top",
+            xanchor="left", yanchor="middle",  
             text="☑" if checked else "☐",
             showarrow=False,
             font=dict(family=font_family, size=font_size+3, color="#1d3557"),
@@ -109,7 +239,7 @@ def add_custom_legend_panel_checkboxes(
     def _label_anno(text, x, y, bold=False, color="#111"):
         return dict(
             x=x, y=y, xref="paper", yref="paper",
-            xanchor="left", yanchor="top",
+            xanchor="left", yanchor="middle",  
             text=f"<b>{text}</b>" if bold else text,
             showarrow=False,
             font=dict(family=font_family, size=font_size + (1 if bold else 0), color=color),
@@ -122,32 +252,35 @@ def add_custom_legend_panel_checkboxes(
         symbol = "☑" if checked else "☐"
         return {f"annotations[{i}].text": symbol for i in ann_idxs}
 
+    # ---------- start ----------
     updatemenus = list(fig.layout.updatemenus) if fig.layout.updatemenus else []
     annotations = list(fig.layout.annotations) if fig.layout.annotations else []
 
-    # Geometry
-    x_cb  = panel_x
-    x_lbl = panel_x + 0.035     # checkbox -> label
-    x_sw  = x_lbl   + 0.008     # label   -> swatch
-    x_txt = x_sw    + 0.016     # swatch  -> text
-    y     = panel_y
+    # base x positions (checkbox → swatch → text)
+    x_check = panel_x
+    x_swatch_base = x_check + hspace_check_to_swatch
+    x_text_base = x_swatch_base + swatch_size + hspace_swatch_to_text
+
+    # current y cursor
+    y = panel_y
 
     group_box_anno_idx: dict[str, int] = {}
     subgroup_box_anno_idx: dict[tuple[str, str], int] = {}
     item_box_anno_idx: dict[tuple[str, str | None, str], int] = {}
 
-    # -------- panel rows --------
     for group in group_indices.keys():
         g_idxs = group_indices.get(group, [])
 
+        # group row
         g_box_idx = len(annotations)
-        annotations.append(_checkbox_anno(x_cb, y, checked=True))
-        annotations.append(_label_anno(group, x_lbl, y, bold=True))
+        annotations.append(_checkbox_anno(x_check, y, checked=True))
+        annotations.append(_label_anno(group, x_text_base, y, bold=True))
         group_box_anno_idx[group] = g_box_idx
 
+        # placeholder group toggle button
         updatemenus.append(dict(
             type="buttons",
-            x=x_cb, y=y,
+            x=x_check, y=y,
             xanchor="left", yanchor="top",
             direction="right",
             showactive=False,
@@ -157,22 +290,24 @@ def add_custom_legend_panel_checkboxes(
             pad={"r": 0, "l": 0, "t": 0, "b": 0},
         ))
         group_btn_pos = len(updatemenus) - 1
-        y -= row_step
+        y -= vspace_in_group
 
         child_box_idxs_for_group: list[int] = []
 
-        if group in subitem_indices:  # ---------- 3-level (Group -> Subgroup -> Items)
+        # -------- 3-level: group -> subgroup -> items --------
+        if group in subitem_indices:
             for sublabel, sub_items in subitem_indices[group].items():
+                # subgroup header
                 sg_box_idx = len(annotations)
-                annotations.append(_checkbox_anno(x_cb + indent_dx, y, checked=True))
-                annotations.append(_label_anno(sublabel, x_lbl + indent_dx, y, bold=False))
+                annotations.append(_checkbox_anno(x_check + indent_lvl1, y, checked=True))
+                annotations.append(_label_anno(sublabel, x_text_base + indent_lvl1, y, bold=False))
                 subgroup_box_anno_idx[(group, sublabel)] = sg_box_idx
-                sg_y = y
                 child_box_idxs_for_group.append(sg_box_idx)
 
+                # placeholder subgroup button
                 updatemenus.append(dict(
                     type="buttons",
-                    x=x_cb + indent_dx, y=sg_y,
+                    x=x_check + indent_lvl1, y=y,
                     xanchor="left", yanchor="top",
                     direction="right",
                     showactive=False,
@@ -183,39 +318,46 @@ def add_custom_legend_panel_checkboxes(
                 ))
                 sg_btn_pos = len(updatemenus) - 1
 
-                y -= row_step
+                y -= vspace_in_group  # drop to first item row
 
+                # layout for items under this subgroup
                 cols = max(1, int(items_per_row))
                 col = 0
-                row_y = y  
-
+                row_y = y
                 sg_trace_idxs: list[int] = []
                 sg_child_item_box_idxs: list[int] = []
 
                 for (item_label, idxs) in sub_items:
-                    x_offset = col * col_dx
+                    x_offset = col * hspace_item_col
 
+                    # checkbox
                     i_box_idx = len(annotations)
-                    annotations.append(_checkbox_anno(x_cb + 2*indent_dx + x_offset, row_y, checked=True))
+                    annotations.append(_checkbox_anno(x_check + indent_lvl2 + x_offset, row_y, checked=True))
                     item_box_anno_idx[(group, sublabel, item_label)] = i_box_idx
 
+                    # swatch + text
                     color = _infer_item_color(idxs)
-                    _swatch_shape(fig, color, x_lbl + 2*indent_dx + x_offset, row_y, size=0.02)
+                    _swatch_shape(fig, color, x_swatch_base + indent_lvl2 + x_offset, row_y, size=swatch_size)
                     label_color = color if colorize_item_label else "#111"
-                    annotations.append(_label_anno(item_label, x_txt + 2*indent_dx + x_offset, row_y, color=label_color))
+                    annotations.append(_label_anno(
+                        _ellipsis(item_label, max_item_label_chars),
+                        x_text_base + indent_lvl2 + x_offset, row_y,
+                        color=label_color
+                    ))
 
+                    # per-item toggle button
                     show_layout = _update_boxes_layout([i_box_idx], True)
                     hide_layout = _update_boxes_layout([i_box_idx], False)
                     updatemenus.append(dict(
                         type="buttons",
-                        x=x_cb + 2*indent_dx + x_offset, y=row_y,
+                        x=x_check + indent_lvl2 + x_offset, y=row_y,
                         xanchor="left", yanchor="top",
                         direction="right",
                         showactive=False,
                         buttons=[dict(
                             method="update", label=" ",
-                            args=[{'visible': [True]*len(idxs)}, show_layout, idxs],
-                            args2=[{'visible': [False]*len(idxs)}, hide_layout, idxs],
+                            args=[{'visible': [True] * len(idxs)}, show_layout, idxs],
+                            args2=[{'visible': [False] * len(idxs)}, hide_layout, idxs],
                         )],
                         bgcolor="rgba(255,255,255,0.0)",
                         bordercolor="rgba(0,0,0,0)",
@@ -226,67 +368,78 @@ def add_custom_legend_panel_checkboxes(
                     sg_child_item_box_idxs.append(i_box_idx)
                     child_box_idxs_for_group.append(i_box_idx)
 
+                    # wrap columns
                     col += 1
                     if col >= cols:
                         col = 0
-                        row_y -= row_step 
+                        row_y -= vspace_in_group
 
-                y = row_y if col == 0 else (row_y - row_step)
+                # advance y to line after the last used row
+                y = row_y if col == 0 else (row_y - vspace_in_group)
 
-                # --- Patch the subgroup button to toggle its children
+                # patch subgroup button to toggle its children
                 show_layout = _update_boxes_layout([sg_box_idx] + sg_child_item_box_idxs, True)
                 hide_layout = _update_boxes_layout([sg_box_idx] + sg_child_item_box_idxs, False)
                 updatemenus[sg_btn_pos]["buttons"] = [dict(
                     method="update", label=" ",
-                    args=[{'visible': [True]*len(sg_trace_idxs)}, show_layout, sg_trace_idxs],
-                    args2=[{'visible': [False]*len(sg_trace_idxs)}, hide_layout, sg_trace_idxs],
+                    args=[{'visible': [True] * len(sg_trace_idxs)}, show_layout, sg_trace_idxs],
+                    args2=[{'visible': [False] * len(sg_trace_idxs)}, hide_layout, sg_trace_idxs],
                 )]
 
-            y -= row_step * 0.25  # spacer between groups
+            # add group gap
+            y -= vspace_between_groups
 
-
-        else:  # ---------- 2-level (Group -> Items)
+        # -------- 2-level: group -> items --------
+        else:
             for (item_label, idxs) in item_indices.get(group, []):
+                # checkbox
                 i_box_idx = len(annotations)
-                annotations.append(_checkbox_anno(x_cb + indent_dx, y, checked=True))
+                annotations.append(_checkbox_anno(x_check + indent_lvl1, y, checked=True))
                 item_box_anno_idx[(group, None, item_label)] = i_box_idx
 
+                # swatch + text
                 color = _infer_item_color(idxs)
-                _swatch_shape(fig, color, x_lbl + indent_dx, y, size=0.02)
+                _swatch_shape(fig, color, x_swatch_base + indent_lvl1, y, size=swatch_size)
                 label_color = color if colorize_item_label else "#111"
-                annotations.append(_label_anno(item_label, x_txt + indent_dx, y, color=label_color))
+                annotations.append(_label_anno(
+                    _ellipsis(item_label, max_item_label_chars),
+                    x_text_base + indent_lvl1, y,
+                    color=label_color
+                ))
 
+                # per-item toggle
                 show_layout = _update_boxes_layout([i_box_idx], True)
                 hide_layout = _update_boxes_layout([i_box_idx], False)
                 updatemenus.append(dict(
                     type="buttons",
-                    x=x_cb + indent_dx, y=y,
+                    x=x_check + indent_lvl1, y=y,
                     xanchor="left", yanchor="top",
                     direction="right",
                     showactive=False,
                     buttons=[dict(
                         method="update", label=" ",
-                        args=[{'visible': [True]*len(idxs)}, show_layout, idxs],
-                        args2=[{'visible': [False]*len(idxs)}, hide_layout, idxs],
+                        args=[{'visible': [True] * len(idxs)}, show_layout, idxs],
+                        args2=[{'visible': [False] * len(idxs)}, hide_layout, idxs],
                     )],
                     bgcolor="rgba(255,255,255,0.0)",
                     bordercolor="rgba(0,0,0,0)",
                     pad={"r": 0, "l": 0, "t": 0, "b": 0},
                 ))
                 child_box_idxs_for_group.append(i_box_idx)
-                y -= row_step
+                y -= vspace_in_group
 
-            y -= row_step * 0.25
+            # add group gap
+            y -= vspace_between_groups
 
-        # Patch GROUP button to flip its own + all children (subgroups & items)
+        # patch group button to toggle all children (subgroups & items)
         all_annos_for_group = [g_box_idx] + child_box_idxs_for_group
         show_layout = _update_boxes_layout(all_annos_for_group, True)
         hide_layout = _update_boxes_layout(all_annos_for_group, False)
         updatemenus[group_btn_pos]["buttons"] = [
             dict(method="update",
                  label=" ",
-                 args=[{'visible': [True]*len(g_idxs)}, show_layout, g_idxs],
-                 args2=[{'visible': [False]*len(g_idxs)}, hide_layout, g_idxs]),
+                 args=[{'visible': [True] * len(g_idxs)}, show_layout, g_idxs],
+                 args2=[{'visible': [False] * len(g_idxs)}, hide_layout, g_idxs]),
         ]
 
     # -------- Global controls --------
@@ -297,37 +450,83 @@ def add_custom_legend_panel_checkboxes(
         + list(item_box_anno_idx.values())
     )
 
-    def _global_buttons():
-        return dict(
-            type="buttons",
-            x=x_lbl + 0.14, y=y,
-            xanchor="left", yanchor="top",
-            direction="right",
-            showactive=False,
-            buttons=[
-                dict(method="update",
-                     label="Show all",
-                     args=[{'visible': True}, _update_boxes_layout(all_box_idxs, True), all_trace_idxs]),
-                dict(method="update",
-                     label="Clear all",
-                     args=[{'visible': False}, _update_boxes_layout(all_box_idxs, False), all_trace_idxs]),
-            ],
-            bgcolor="rgba(245,245,245,0.95)",
-            bordercolor="rgba(200,200,200,1)",
-            borderwidth=1,
-            pad={"r": 6, "l": 6, "t": 2, "b": 2},
-            font={"family": font_family, "size": max(11, font_size-1)},
-        )
+    annotations.append(_label_anno("Global", x_text_base, y, bold=True))
+    updatemenus.append(dict(
+        type="buttons",
+        x=x_text_base, y=y - vspace_in_group,
+        xanchor="left", yanchor="top",
+        direction="right",
+        showactive=False,
+        buttons=[
+            dict(method="update",
+                 label="Show all",
+                 args=[{'visible': True}, _update_boxes_layout(all_box_idxs, True), all_trace_idxs]),
+            dict(method="update",
+                 label="Clear all",
+                 args=[{'visible': False}, _update_boxes_layout(all_box_idxs, False), all_trace_idxs]),
+        ],
+        bgcolor="rgba(245,245,245,0.95)",
+        bordercolor="rgba(200,200,200,1)",
+        borderwidth=1,
+        pad={"r": 6, "l": 6, "t": 2, "b": 2},
+        font={"family": font_family, "size": max(11, font_size - 1)},
+    ))
 
-    annotations.append(_label_anno("Global", x_lbl, y, bold=True))
-    updatemenus.append(_global_buttons())
+    current_r = int(getattr(fig.layout.margin, "r", 0) or 0)
+    fig.update_layout(
+        margin=dict(r=max(current_r, int(panel_margin_px))),
+        updatemenus=updatemenus,
+        annotations=annotations,
+    )
 
-    fig.update_layout(updatemenus=updatemenus, annotations=annotations)
-    
+def _add_camera_snap_controls(
+    fig,
+    *,
+    x: float = 0.02,
+    y: float = 0.98,
+    font_family: str = "Cambria",
+    font_size: int = 12,
+):
+    """
+    Adds small camera snap buttons: R, L, A, P, S, I.
+    """
+    eyes = {
+        "R": dict(x= 2.0, y= 0.0, z= 0.0),  # right lateral
+        "L": dict(x=-2.0, y= 0.0, z= 0.0),  # left lateral
+        "A": dict(x= 0.0, y= 2.0, z= 0.0),  # anterior (front)
+        "P": dict(x= 0.0, y=-2.0, z= 0.0),  # posterior (back)
+        "S": dict(x= 0.0, y= 0.0, z= 2.0),  # superior (top)
+        "I": dict(x= 0.0, y= 0.0, z=-2.0),  # inferior (bottom)
+    }
+    buttons = []
+    for lbl, eye in eyes.items():
+        buttons.append(dict(
+            label=lbl,
+            method="relayout",
+            args=[{"scene.camera": {"eye": eye}}],
+        ))
+    updatemenus = list(fig.layout.updatemenus) if fig.layout.updatemenus else []
+    updatemenus.append(dict(
+        type="buttons",
+        x=x, y=y,
+        xanchor="left", yanchor="top",
+        direction="right",
+        showactive=False,
+        buttons=buttons,
+        bgcolor="rgba(245,245,245,0.95)",
+        bordercolor="rgba(200,200,200,1)",
+        borderwidth=1,
+        pad={"r": 4, "l": 4, "t": 2, "b": 2},
+        font={"family": font_family, "size": font_size},
+    ))
+    fig.update_layout(updatemenus=updatemenus)
+
+
+# ---------- main figure ----------
 
 def build_ieeg_figure(
     *,
-    subjects: list[dict],
+    subjects: list[dict] | None = None,
     # --- pials ---
     lh_pial: str | None = None,
     rh_pial: str | None = None,
@@ -335,17 +534,16 @@ def build_ieeg_figure(
     # --- MRI slices ---
     t1_path: str | None = None,
     show_slices: bool = True,
-    # slice options
-    slice_x: int | None = None,  # sagittal (axis=0)
-    slice_y: int | None = None,  # coronal  (axis=1)
-    slice_z: int | None = None,  # axial    (axis=2)
+    slice_x: int | None = None,
+    slice_y: int | None = None,
+    slice_z: int | None = None,
     slice_opacity: float = 0.6,
     slice_clim: tuple[float, float] | None = None,
     # --- electrode coloring ---
-    color_mode: str = "by_subject", # "by_subject" | "by_electrode" | "constant" | "cmap"
+    color_mode: str = "by_subject",
     subject_color_map: dict[str, str] | None = None,
-    electrode_colors: dict | None = None, # for "by_electrode" keys "SUBJ:Electrode"
-    scores_by_subject: dict[str, np.ndarray] | None = None,  # for "cmap"
+    electrode_colors: dict | None = None,
+    scores_by_subject: dict[str, np.ndarray] | None = None,
     colorscale=None, vmin=None, vmax=None, constant_color="crimson",
     # --- aesthetics ---
     marker_size: int = 9, line_width: int = 9, extension_length: float = 30.0,
@@ -353,21 +551,39 @@ def build_ieeg_figure(
     camera_eye: dict | None = None, font_family: str = "Cambria", font_size: int = 16,
     # --- ROI meshes ---
     roi_meshes: list[dict] | None = None,
-    roi_smooth_iters: int | None = None,  
+    roi_smooth_iters: int | None = None,
     show_roi_meshes: bool = True,
     fiber_bundles: dict[str, np.ndarray] | None = None,
     fiber_colors: dict[str, str] | None = None,
     fiber_line_width: int = 8,
+    fiber_opacity: float | None = None, 
     # --- FreeSurfer aseg support ---
     freesurfer_aseg: str | None = None,
     fs_roi_labels: dict[str, int] | None = None,
     fs_roi_colors: dict[str, str] | None = None,
     fs_roi_opacity: float = 0.25,
     fs_roi_smoothing: bool = True,
+    # --- Legend/panel layout ---
+    panel_x: float = 1.015,
+    panel_y: float = 1.00,
+    vspace_in_group: float = 0.03,
+    vspace_between_groups: float = 0.02,
+    indent_lvl1: float = 0.012,
+    indent_lvl2: float = 0.024,
+    items_per_row: int = 5,
+    hspace_item_col: float = 0.06,
+    hspace_check_to_swatch: float = 0.022,
+    hspace_swatch_to_text: float = 0.0022,
+    swatch_size: float = 0.016,
+    max_item_label_chars: int | None = 18,
+    panel_margin_px: int = 400,
+    colorize_item_label: bool = True,
+    # --- camera snap buttons ---
+    add_view_buttons: bool = True,
+    view_buttons_x: float = 0.02,
+    view_buttons_y: float = 0.98,
 ):
-    """
-    Build a 3D iEEG Plotly figure with custom checkbox-style legend panel on the right.
-    """
+
     go = _require_plotly()
     from collections import defaultdict, OrderedDict
 
@@ -387,14 +603,12 @@ def build_ieeg_figure(
         bgcolor=bgcolor,
         camera=(camera_eye or dict(eye=dict(x=-1.5, y=0, z=0))),
     )
-    
     fig.update_layout(
         width=width,
         height=height,
         scene=scene,
         showlegend=False,
         font=dict(family=font_family, size=font_size),
-        margin=dict(r=260)  # space for the custom panel
     )
 
     # =====================================================================
@@ -485,112 +699,111 @@ def build_ieeg_figure(
             item_indices[group].append(("Sagittal", [idx]))
 
     # =====================================================================
-    # ELECTRODES (multi-subject)
+    # ELECTRODES (multi-subject) -- subjects optional
     # =====================================================================
-    bundle = read_subject_electrodes(subjects)
-    subj_data = {}
-    for subj, payload in bundle.items():
-        C = payload["coords"]
-        N = payload["names"]
-        subj_data[subj] = {
-            "coords": C,
-            "names": N,
-            "color": (subject_color_map or {}).get(subj, payload.get("color", "dodgerblue")),
-        }
-
-    # normalize cmap range
-    if color_mode == "cmap" and scores_by_subject:
-        flat = np.concatenate([np.asarray(v, float) for v in scores_by_subject.values()]) \
-               if scores_by_subject else np.array([])
-        finite = flat[np.isfinite(flat)]
-        if finite.size:
-            if vmin is None: vmin = float(np.nanmin(finite))
-            if vmax is None: vmax = float(np.nanmax(finite))
-            if vmin == vmax:
-                vmin, vmax = vmin - 1.0, vmax + 1.0
-
     subitem_indices: dict[str, dict[str, list[tuple[str, list[int]]]]] = {}
+    if subjects:
+        bundle = read_subject_electrodes(subjects)
+        subj_data = {}
+        for subj, payload in bundle.items():
+            C = payload["coords"]
+            N = payload["names"]
+            subj_data[subj] = {
+                "coords": C,
+                "names": N,
+                "color": (subject_color_map or {}).get(subj, payload.get("color", "dodgerblue")),
+            }
 
-    for subj, payload in subj_data.items():
-        C, N = payload["coords"], payload["names"]
-        subj_color = payload["color"]
-        group = f"Electrodes — subject {subj}"
+        # normalize cmap range
+        if color_mode == "cmap" and scores_by_subject:
+            flat = np.concatenate([np.asarray(v, float) for v in scores_by_subject.values()]) \
+                   if scores_by_subject else np.array([])
+            finite = flat[np.isfinite(flat)]
+            if finite.size:
+                if vmin is None: vmin = float(np.nanmin(finite))
+                if vmax is None: vmax = float(np.nanmax(finite))
+                if vmin == vmax:
+                    vmin, vmax = vmin - 1.0, vmax + 1.0
 
-        from collections import OrderedDict
-        names = np.array([f"{subj}:{n}" for n in N], dtype=object)
-        by_el = OrderedDict()
-        for i, nm in enumerate(names):
-            by_el.setdefault(nm, []).append(i)
+        for subj, payload in subj_data.items():
+            C, N = payload["coords"], payload["names"]
+            subj_color = payload["color"]
+            group = f"Electrodes — subject {subj}"
 
-        subitem_indices[group] = {"Contacts": [], "Trajectories": []}
+            names = np.array([f"{subj}:{n}" for n in N], dtype=object)
+            by_el = OrderedDict()
+            for i, nm in enumerate(names):
+                by_el.setdefault(nm, []).append(i)
 
-        cbar_added = False
-        for gname, idxs in by_el.items():
-            P = C[idxs]
-            marker = dict(size=marker_size, opacity=1.0, line=dict(width=0.8, color="black"))
-            if color_mode == "cmap":
-                s_subj = np.asarray(scores_by_subject.get(subj, np.full(C.shape[0], np.nan)), float)
-                s = s_subj[idxs]
-                marker.update(dict(color=s, colorscale=colorscale, cmin=vmin, cmax=vmax))
-                if not cbar_added:
-                    marker["colorbar"] = dict(title=dict(text="#HFOs"))
-                    cbar_added = True
-            elif color_mode == "by_subject":
-                marker.update(dict(color=subj_color))
-            elif color_mode == "by_electrode":
-                marker.update(dict(color=(electrode_colors or {}).get(gname, "dodgerblue")))
-            elif color_mode == "constant":
-                marker.update(dict(color=constant_color))
-            else:
-                raise ValueError("color_mode must be one of {'by_subject','by_electrode','constant','cmap'}")
+            subitem_indices[group] = {"Contacts": [], "Trajectories": []}
 
-            pretty = _pretty_elname(gname)
+            cbar_added = False
+            for gname, idxs in by_el.items():
+                P = C[idxs]
+                marker = dict(size=marker_size, opacity=1.0, line=dict(width=0.8, color="black"))
+                if color_mode == "cmap":
+                    s_subj = np.asarray(scores_by_subject.get(subj, np.full(C.shape[0], np.nan)), float)
+                    s = s_subj[idxs]
+                    marker.update(dict(color=s, colorscale=colorscale, cmin=vmin, cmax=vmax))
+                    if not cbar_added:
+                        marker["colorbar"] = dict(title=dict(text="#HFOs"))
+                        cbar_added = True
+                elif color_mode == "by_subject":
+                    marker.update(dict(color=subj_color))
+                elif color_mode == "by_electrode":
+                    marker.update(dict(color=(electrode_colors or {}).get(gname, "dodgerblue")))
+                elif color_mode == "constant":
+                    marker.update(dict(color=constant_color))
+                else:
+                    raise ValueError("color_mode must be one of {'by_subject','by_electrode','constant','cmap'}")
 
-            # Contacts trace
-            fig.add_trace(go.Scatter3d(
-                x=P[:, 0], y=P[:, 1], z=P[:, 2],
-                mode="markers",
-                name=f"{subj}: {pretty} contacts",
-                marker=marker,
-            ))
-            c_idx = len(fig.data) - 1
-            group_indices[group].append(c_idx)
-            subitem_indices[group]["Contacts"].append((f"{pretty}", [c_idx]))
+                pretty = _pretty_elname(gname)
 
-            # Trajectory trace (if >=2 contacts)
-            if P.shape[0] >= 2:
-                v = P[-1] - P[0]
-                n = np.linalg.norm(v)
-                if n > 0:
-                    v = v / n
-                    deep = P[-1] + extension_length * v
-                    TP = np.vstack([P, deep])
-                    if color_mode == "by_electrode":
-                        ln_color = (electrode_colors or {}).get(gname, "dodgerblue")
-                    elif color_mode == "constant":
-                        ln_color = constant_color
-                    elif color_mode == "by_subject":
-                        ln_color = subj_color
-                    else:
-                        ln_color = "dodgerblue"
-                    fig.add_trace(go.Scatter3d(
-                        x=TP[:, 0], y=TP[:, 1], z=TP[:, 2],
-                        mode="lines",
-                        name=f"{subj}: {pretty} trajectory",
-                        line=dict(width=line_width, color=ln_color),
-                        hoverinfo="skip",
-                    ))
-                    t_idx = len(fig.data) - 1
-                    group_indices[group].append(t_idx)
-                    subitem_indices[group]["Trajectories"].append((f"{pretty}", [t_idx]))
+                # Contacts trace
+                fig.add_trace(go.Scatter3d(
+                    x=P[:, 0], y=P[:, 1], z=P[:, 2],
+                    mode="markers",
+                    name=f"{subj}: {pretty} contacts",
+                    marker=marker,
+                ))
+                c_idx = len(fig.data) - 1
+                group_indices[group].append(c_idx)
+                subitem_indices[group]["Contacts"].append((f"{pretty}", [c_idx]))
+
+                # Trajectory trace (if >=2 contacts)
+                if P.shape[0] >= 2:
+                    v = P[-1] - P[0]
+                    n = np.linalg.norm(v)
+                    if n > 0:
+                        v = v / n
+                        deep = P[-1] + extension_length * v
+                        TP = np.vstack([P, deep])
+                        if color_mode == "by_electrode":
+                            ln_color = (electrode_colors or {}).get(gname, "dodgerblue")
+                        elif color_mode == "constant":
+                            ln_color = constant_color
+                        elif color_mode == "by_subject":
+                            ln_color = subj_color
+                        else:
+                            ln_color = "dodgerblue"
+                        fig.add_trace(go.Scatter3d(
+                            x=TP[:, 0], y=TP[:, 1], z=TP[:, 2],
+                            mode="lines",
+                            name=f"{subj}: {pretty} trajectory",
+                            line=dict(width=line_width, color=ln_color),
+                            hoverinfo="skip",
+                        ))
+                        t_idx = len(fig.data) - 1
+                        group_indices[group].append(t_idx)
+                        subitem_indices[group]["Trajectories"].append((f"{pretty}", [t_idx]))
 
     # =====================================================================
-    # ROI meshes + fiber bundles 
+    # ROI meshes + fiber bundles  (deterministic colors + fiber opacity)
     # =====================================================================
     if show_roi_meshes:
         merged_roi_meshes: list[dict] = list(roi_meshes or [])
 
-        # FS aseg -> optional merge (unchanged)
+        # FS aseg -> optional merge
         if freesurfer_aseg and fs_roi_labels:
             merged_roi_meshes.extend(
                 _fs_aseg_to_mesh_list(
@@ -601,6 +814,13 @@ def build_ieeg_figure(
                     smoothing=fs_roi_smoothing,
                 )
             )
+
+        # Assign colors (only where missing) using tab20; fibers get colors too
+        merged_roi_meshes, fiber_colors_final = _assign_colors_if_missing(
+            merged_roi_meshes or [],
+            fiber_bundles,
+            fiber_colors,
+        )
 
         if merged_roi_meshes or fiber_bundles:
             group = "ROI meshes"
@@ -617,21 +837,27 @@ def build_ieeg_figure(
                 f = np.asarray(r["faces"], int)
                 v, f = _maybe_smooth(v, f, roi_smooth_iters)
 
+                display_name = pretty_roi_name(r.get("name", "ROI"))
+                face_color = r.get("color", "tomato")
+                face_opacity = float(r.get("opacity", fs_roi_opacity))
+
                 fig.add_trace(go.Mesh3d(
                     x=v[:, 0], y=v[:, 1], z=v[:, 2],
                     i=f[:, 0], j=f[:, 1], k=f[:, 2],
-                    color=r.get("color", "tomato"),
-                    opacity=float(r.get("opacity", 0.25)),
-                    name=r.get("name", "ROI"),
+                    color=face_color,
+                    opacity=face_opacity,
+                    name=display_name,
                     lighting=dict(ambient=0.25, diffuse=0.3, specular=0.2),
                 ))
                 idx = len(fig.data) - 1
                 group_indices[group].append(idx)
-                item_indices[group].append((r.get("name", "ROI"), [idx]))
+                item_indices[group].append((display_name, [idx]))
 
             # ---- Fibers (.mat) ----
             if fiber_bundles:
-                for name, arr in fiber_bundles.items():
+                # default fiber opacity: follow mesh default if not specified
+                f_opac = fs_roi_opacity if fiber_opacity is None else float(fiber_opacity)
+                for raw_name, arr in fiber_bundles.items():
                     M = np.asarray(arr)
                     if M.ndim != 2 or M.shape[1] < 3:
                         continue
@@ -655,18 +881,19 @@ def build_ieeg_figure(
                             x.append(None); y.append(None); z.append(None)
                         last = b
 
-                    col = (fiber_colors or {}).get(name, "#bbbbbb")
+                    col = (fiber_colors_final or {}).get(raw_name, "#bbbbbb")
+                    display_name = pretty_roi_name(raw_name)
                     fig.add_trace(go.Scatter3d(
                         x=x, y=y, z=z,
                         mode="lines",
                         line=dict(width=fiber_line_width, color=col),
-                        name=name,            # <- shows e.g. "MLF_r"
+                        name=display_name,
                         hoverinfo="skip",
+                        opacity=f_opac,
                     ))
                     idx = len(fig.data) - 1
                     group_indices[group].append(idx)
-                    item_indices[group].append((name, [idx]))
-
+                    item_indices[group].append((display_name, [idx]))
 
     # =====================================================================
     # Custom legend-like panel on the right
@@ -674,14 +901,29 @@ def build_ieeg_figure(
     add_custom_legend_panel_checkboxes(
         fig, group_indices, item_indices,
         subitem_indices=subitem_indices,
-        panel_x=1.015, panel_y=1.00,
-        row_step=0.04,        
-        indent_dx=0.045,         
-        items_per_row=12,       
-        col_dx=0.08,           
+        panel_x=panel_x, panel_y=panel_y,
+        vspace_in_group=vspace_in_group,
+        vspace_between_groups=vspace_between_groups,
+        indent_lvl1=indent_lvl1,
+        indent_lvl2=indent_lvl2,
+        items_per_row=items_per_row,
+        hspace_item_col=hspace_item_col,
+        hspace_check_to_swatch=hspace_check_to_swatch,
+        hspace_swatch_to_text=hspace_swatch_to_text,
+        swatch_size=swatch_size,
+        max_item_label_chars=max_item_label_chars,
         font_family=font_family,
-        font_size=max(11, font_size-2),
-        colorize_item_label=True
+        font_size=font_size,
+        colorize_item_label=colorize_item_label,
+        panel_margin_px=panel_margin_px,
     )
+
+    # camera snap controls
+    if add_view_buttons:
+        _add_camera_snap_controls(
+            fig,
+            x=view_buttons_x, y=view_buttons_y,
+            font_family=font_family, font_size=max(11, font_size - 2),
+        )
 
     return fig
