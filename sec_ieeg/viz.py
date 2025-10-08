@@ -164,6 +164,48 @@ def _swatch_shape(fig, color, x, y, size=0.018, border="white", valign="middle")
         layer="above",
     ))
 
+def _add_camera_snap_controls(
+    fig,
+    *,
+    x: float = 0.02,
+    y: float = 0.98,
+    font_family: str = "Cambria",
+    font_size: int = 12,
+):
+    """
+    Adds small camera snap buttons: R, L, A, P, S, I.
+    """
+    eyes = {
+        "R": dict(x= 2.0, y= 0.0, z= 0.0),  # right lateral
+        "L": dict(x=-2.0, y= 0.0, z= 0.0),  # left lateral
+        "A": dict(x= 0.0, y= 2.0, z= 0.0),  # anterior (front)
+        "P": dict(x= 0.0, y=-2.0, z= 0.0),  # posterior (back)
+        "S": dict(x= 0.0, y= 0.0, z= 2.0),  # superior (top)
+        "I": dict(x= 0.0, y= 0.0, z=-2.0),  # inferior (bottom)
+    }
+    buttons = []
+    for lbl, eye in eyes.items():
+        buttons.append(dict(
+            label=lbl,
+            method="relayout",
+            args=[{"scene.camera": {"eye": eye}}],
+        ))
+    updatemenus = list(fig.layout.updatemenus) if fig.layout.updatemenus else []
+    updatemenus.append(dict(
+        type="buttons",
+        x=x, y=y,
+        xanchor="left", yanchor="top",
+        direction="right",
+        showactive=False,
+        buttons=buttons,
+        bgcolor="rgba(245,245,245,0.95)",
+        bordercolor="rgba(200,200,200,1)",
+        borderwidth=1,
+        pad={"r": 4, "l": 4, "t": 2, "b": 2},
+        font={"family": font_family, "size": font_size},
+    ))
+    fig.update_layout(updatemenus=updatemenus)
+
 def add_custom_legend_panel_checkboxes(
     fig,
     group_indices,
@@ -478,49 +520,6 @@ def add_custom_legend_panel_checkboxes(
         updatemenus=updatemenus,
         annotations=annotations,
     )
-
-def _add_camera_snap_controls(
-    fig,
-    *,
-    x: float = 0.02,
-    y: float = 0.98,
-    font_family: str = "Cambria",
-    font_size: int = 12,
-):
-    """
-    Adds small camera snap buttons: R, L, A, P, S, I.
-    """
-    eyes = {
-        "R": dict(x= 2.0, y= 0.0, z= 0.0),  # right lateral
-        "L": dict(x=-2.0, y= 0.0, z= 0.0),  # left lateral
-        "A": dict(x= 0.0, y= 2.0, z= 0.0),  # anterior (front)
-        "P": dict(x= 0.0, y=-2.0, z= 0.0),  # posterior (back)
-        "S": dict(x= 0.0, y= 0.0, z= 2.0),  # superior (top)
-        "I": dict(x= 0.0, y= 0.0, z=-2.0),  # inferior (bottom)
-    }
-    buttons = []
-    for lbl, eye in eyes.items():
-        buttons.append(dict(
-            label=lbl,
-            method="relayout",
-            args=[{"scene.camera": {"eye": eye}}],
-        ))
-    updatemenus = list(fig.layout.updatemenus) if fig.layout.updatemenus else []
-    updatemenus.append(dict(
-        type="buttons",
-        x=x, y=y,
-        xanchor="left", yanchor="top",
-        direction="right",
-        showactive=False,
-        buttons=buttons,
-        bgcolor="rgba(245,245,245,0.95)",
-        bordercolor="rgba(200,200,200,1)",
-        borderwidth=1,
-        pad={"r": 4, "l": 4, "t": 2, "b": 2},
-        font={"family": font_family, "size": font_size},
-    ))
-    fig.update_layout(updatemenus=updatemenus)
-
 
 # ---------- main figure ----------
 
