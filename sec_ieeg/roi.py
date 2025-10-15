@@ -46,7 +46,6 @@ def _maybe_import_scipy_io():
 
 
 # ---------- Core container ----------
-
 class ROIMeshLibrary:
     """
     Collect ROI meshes from multiple sources and expose them as Plotly-ready dicts.
@@ -54,12 +53,15 @@ class ROIMeshLibrary:
     """
     def __init__(self,
                  default_opacity: float = 0.25,
-                 color_map: Optional[Dict[str, str]] = None):
+                 color_map: Optional[Dict[str, str]] = None,
+                 default_smoothing: Optional[str] = "laplacian",
+                 default_smoothing_kwargs: Optional[dict] = None):
         self._meshes: "OrderedDict[str, dict]" = OrderedDict()
-        self.default_opacity = float(default_opacity)
-        self.color_map = dict(color_map or {})
 
-        # For future (non-surface) data like fibers from .mat files
+        self.default_opacity = float(default_opacity)
+        self.default_smoothing = default_smoothing
+        self.default_smoothing_kwargs = dict(default_smoothing_kwargs or {})
+        self.color_map = dict(color_map or {})
         self._fibers: "OrderedDict[str, dict]" = OrderedDict()
 
     # ---- direct add ----
@@ -86,17 +88,19 @@ class ROIMeshLibrary:
 
     # ---- FreeSurfer aseg.mgz ----
     def extend_from_aseg(self,
-                         aseg_path: str,
-                         labels: Dict[str, int],
-                         *,
-                         level: float = 0.0,
-                         step_size: int = 1,
-                         gradient_direction: str = "ascent",
-                         smoothing: bool = True,
-                         laplacian_iters: int = 5) -> None:
+                        aseg_path: str,
+                        labels: Dict[str, int],
+                        *,
+                        level: float = 0.0,
+                        step_size: int = 1,
+                        gradient_direction: str = "ascent",
+                        smoothing: Optional[str] = "laplacian",
+                        smoothing_kwargs: Optional[dict] = None) -> None:
         img = nb.load(aseg_path)
         data = img.get_fdata()
         affine = img.affine
+        smoothing = self.default_smoothing if smoothing is None else smoothing
+        smoothing_kwargs = {**self.default_smoothing_kwargs, **(smoothing_kwargs or {})}
 
         for roi_name, roi_label in labels.items():
             mask = (data == roi_label)
@@ -112,9 +116,10 @@ class ROIMeshLibrary:
             verts = nb.affines.apply_affine(affine, verts)
 
             if smoothing:
-                verts, faces = smooth_trimesh_laplacian(verts, faces, iterations=laplacian_iters)
+                verts, faces = smooth_mesh(verts, faces, method=smoothing, **smoothing_kwargs)
 
             self.add(roi_name, verts, faces)
+
 
     # ---- NIfTI directory (.nii / .nii.gz) ----
     def extend_from_nii_dir(self,
@@ -126,46 +131,43 @@ class ROIMeshLibrary:
                             special_names: Iterable[str] = ("CnF", "RN", "PPN"),
                             step_size: int = 1,
                             gradient_direction: str = "ascent",
-                            smoothing: bool = True,
-                            laplacian_iters: int = 5) -> None:
+                            smoothing: Optional[str] = "laplacian",
+                            smoothing_kwargs: Optional[dict] = None) -> None:
         """
         Heuristic:
-          - if the *basename* begins with one of `special_names`, we treat the
-            volume as scalar and extract iso-surface at `thr` (no binarization).
-          - otherwise we binarize with `volume > thr` and extract level=0.
+        - if basename begins with one of `special_names`, treat volume as scalar
+            and extract iso-surface at `thr` (no binarization).
+        - otherwise binarize with `volume > thr` and extract level=0.
         """
         thresholds = thresholds or {}
         special_set = set(special_names)
+        smoothing = self.default_smoothing if smoothing is None else smoothing
+        smoothing_kwargs = {**self.default_smoothing_kwargs, **(smoothing_kwargs or {})}
 
         for fname in os.listdir(dir_path):
             if not fname.endswith(include_exts):
                 continue
-            if fname.endswith(".mat"):
-                # handled separately (optional fibers)
-                continue
+            if fname.lower().endswith(".mat"):
+                continue  # fibers handled in extend_from_mat_dir
 
             path = os.path.join(dir_path, fname)
-            base = os.path.splitext(os.path.basename(fname))[0]  # strip one extension
-            # also strip a second ".nii" if .nii.gz
+            base = os.path.splitext(os.path.basename(fname))[0]
             base = re.sub(r"\.nii$", "", base, flags=re.IGNORECASE)
 
             img = nb.load(path)
             vol = img.get_fdata()
             aff = img.affine
 
-            # threshold rule
             head = base.split("_")[0]
             thr = thresholds.get(base,
-                  thresholds.get(head,
-                  (0.1 if head in special_set or any(s.lower() in base.lower() for s in special_set)
-                   else default_threshold)))
+                thresholds.get(head,
+                (0.1 if head in special_set or any(s.lower() in base.lower() for s in special_set)
+                else default_threshold)))
 
             if head in special_set:
-                # use raw scalar field; iso-surface at 'thr'
                 use_vol = vol
                 level = float(thr)
             else:
-                # binarize and iso at 0
                 use_vol = (vol > float(thr)).astype(np.uint8)
                 level = 0.0
 
@@ -181,9 +183,10 @@ class ROIMeshLibrary:
             verts = nb.affines.apply_affine(aff, verts)
 
             if smoothing:
-                verts, faces = smooth_trimesh_laplacian(verts, faces, iterations=laplacian_iters)
+                verts, faces = smooth_mesh(verts, faces, method=smoothing, **smoothing_kwargs)
 
             self.add(base, verts, faces)
+
 
     # ---- VTK directory (.vtk) ----
     def extend_from_vtk_dir(self,
@@ -191,8 +194,10 @@ class ROIMeshLibrary:
                             *,
                             mirror_lr: bool = False,
                             include_exts: Tuple[str, ...] = (".vtk",),
-                            smoothing: Optional[str] = None,
-                            smoothing_kwargs: Optional[dict] = None) -> None:
+                            smoothing: Optional[str] = "laplacian",              
+                            smoothing_kwargs: Optional[dict] = None,
+                            vtk_affine: Optional[np.ndarray] = None,            
+                        ) -> None:
         """
         Reads polydata meshes; optionally mirrors X to create _r.
         smoothing: None | 'laplacian' | 'taubin' | 'poisson'
@@ -207,20 +212,25 @@ class ROIMeshLibrary:
             reader.ReadAllScalarsOn()
             reader.ReadAllVectorsOn()
             reader.Update()
-            return reader.GetOutput()
+            poly = reader.GetOutput()
+
+            # Ensure triangles
+            tri = vtk.vtkTriangleFilter()
+            tri.SetInputData(poly)
+            tri.Update()
+            return tri.GetOutput()
 
         def extract_vertices_faces(polydata):
             pts = VN.vtk_to_numpy(polydata.GetPoints().GetData())
-            polys = polydata.GetPolys()
-            polys_np = VN.vtk_to_numpy(polys.GetData())
-            faces = []
-            i = 0
-            n = len(polys_np)
-            while i < n:
-                k = polys_np[i]
-                faces.append(polys_np[i+1:i+1+k])
-                i += (k + 1)
-            return pts, np.asarray(faces, dtype=np.int32)
+            tris = VN.vtk_to_numpy(polydata.GetPolys().GetData())
+            tris = tris.reshape(-1, 4)[:, 1:4]
+            faces = np.asarray(tris, dtype=np.int32)
+            return pts, faces
+
+        smoothing = self.default_smoothing if smoothing is None else smoothing
+        smoothing_kwargs = {**self.default_smoothing_kwargs, **(smoothing_kwargs or {})}
+
+        A = np.asarray(vtk_affine) if vtk_affine is not None else None
 
         for fname in os.listdir(dir_path):
             if not fname.endswith(include_exts):
@@ -231,29 +241,42 @@ class ROIMeshLibrary:
             poly = read_vtk_polydata(path)
             v, f = extract_vertices_faces(poly)
 
-            v_s, f_s = self._maybe_smooth_choice(v, f, smoothing, smoothing_kwargs)
-            self.add(f"{base}_l", v_s, f_s)
+            if A is not None:
+                v = nb.affines.apply_affine(A, v)
+
+            v_s, f_s = smooth_mesh(v, f, method=smoothing, **smoothing_kwargs) if smoothing else (v, f)
+
+            name = base if not mirror_lr else f"{base}_l"
+            self.add(name, v_s, f_s)
 
             if mirror_lr:
                 v_m = v_s.copy()
                 v_m[:, 0] *= -1.0
-                self.add(f"{base}_r", v_m, f_s)
+                f_m = f_s[:, ::-1]
+                self.add(f"{base}_r", v_m, f_m)
+
+
     
     # ---- MATLAB .mat ----
-    def extend_from_mat_dir(
-        self,
-        dir_path: str,
-        *,
-        key_guess: str = "fibers",
-    ) -> None:
+    def extend_from_mat_dir(self,
+                            dir_path: str,
+                            *,
+                            key_guess: str = "fibers",
+                            smoothing: Optional[str] = None,
+                            smoothing_kwargs: Optional[dict] = None,
+                        ) -> None:
         """
         Minimal reader for .mat files containing a 'fibers' array.
         Stores self._fibers[name] = (N,4) array [x,y,z,fiber_id].
+
+        Note: smoothing is ignored (fibers are polylines, not triangle meshes).
         """
         sio = _maybe_import_scipy_io()
         if sio is None:
             print("[ROIMeshLibrary] SciPy not installed; skipping .mat files.")
             return
+
+        warned = False
 
         for fname in os.listdir(dir_path):
             if not fname.lower().endswith(".mat"):
@@ -282,8 +305,12 @@ class ROIMeshLibrary:
 
             base = os.path.splitext(fname)[0]          # e.g. MLF_r
             self._fibers[base] = arr
-            # give it a deterministic default color if none provided already
             self.color_map.setdefault(base, self.color_map.get(base) or _default_color_for(base))
+
+            if smoothing and not warned:
+                print("[ROIMeshLibrary] NOTE: smoothing requested for .mat fibers is ignored (applies to triangle meshes only).")
+                warned = True
+
 
     def get_fibers(self) -> dict[str, np.ndarray]:
         """Return dict: bundle_name -> (N,4) array [x,y,z,fiber_id]."""
@@ -308,10 +335,6 @@ class ROIMeshLibrary:
 
     # ---- Output for Plotly ----
     def to_plotly_mesh_list(self) -> List[dict]:
-        """
-        Return a list of dicts the viz expects:
-        {"name","vertices","faces","color","opacity"}
-        """
         out = []
         for name, payload in self._meshes.items():
             out.append({
@@ -320,8 +343,10 @@ class ROIMeshLibrary:
                 "faces": payload["faces"],
                 "color": payload["color"],
                 "opacity": payload["opacity"],
+                "meta": payload.get("meta", {}),   
             })
         return out
+
 
     def __len__(self) -> int:
         return len(self._meshes)
@@ -330,24 +355,20 @@ class ROIMeshLibrary:
         return iter(self._meshes.items())
     
 
-def smooth_trimesh(vertices, faces, iterations=5):
-    trimesh = _require_trimesh()
-    mesh = trimesh.Trimesh(vertices, faces, process=False)
-    mesh = trimesh.smoothing.filter_laplacian(mesh, iterations=iterations)
-    return mesh.vertices, mesh.faces
-
 def extract_roi_trimeshes(
     aseg_path: str,
     roi_labels: dict,
     level: float = 0.0,
     step_size: int = 1,
     gradient_direction: str = "ascent",
-    apply_smoothing: bool = True,
+    smoothing: Optional[str] = "laplacian",
+    smoothing_kwargs: Optional[dict] = None,
 ) -> dict:
-    trimesh = _require_trimesh()
+    tm = _require_trimesh()
     img = nb.load(aseg_path)
     data = img.get_fdata()
     affine = img.affine
+    smoothing_kwargs = dict(smoothing_kwargs or {})
 
     roi_trimeshes = {}
     for roi_name, roi_label in roi_labels.items():
@@ -360,14 +381,15 @@ def extract_roi_trimeshes(
             step_size=step_size,
             gradient_direction=gradient_direction,
         )
-        verts = nb.affines.apply_affine(affine, verts)  # into world mm
-        if apply_smoothing:
-            verts, faces = smooth_trimesh(verts, faces, iterations=5)
-        roi_trimeshes[roi_name] = trimesh.Trimesh(
+        verts = nb.affines.apply_affine(affine, verts)
+        if smoothing:
+            verts, faces = smooth_mesh(verts, faces, method=smoothing, **smoothing_kwargs)
+        roi_trimeshes[roi_name] = tm.Trimesh(
             vertices=np.asarray(verts, dtype=np.float64),
             faces=np.asarray(faces, dtype=np.int32),
             process=False
         )
+
     return roi_trimeshes
 
 def assign_by_mesh(
@@ -473,10 +495,10 @@ def load_pial_mesh(lh_pial: str | None, rh_pial: str | None):
 def smooth_trimesh_laplacian(vertices: np.ndarray,
                              faces: np.ndarray,
                              iterations: int = 5) -> Tuple[np.ndarray, np.ndarray]:
-    """Lightweight Laplacian smoothing via trimesh."""
+    """Laplacian smoothing via trimesh."""
     tm = _require_trimesh()
     mesh = tm.Trimesh(vertices, faces, process=False)
-    mesh = tm.smoothing.filter_laplacian(mesh, iterations=iterations)
+    mesh = tm.smoothing.filter_laplacian(mesh, iterations=int(iterations))
     return np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=np.int32)
 
 def smooth_trimesh_taubin(vertices: np.ndarray,
@@ -487,7 +509,7 @@ def smooth_trimesh_taubin(vertices: np.ndarray,
     """Taubin smoothing via trimesh (low-shrink)."""
     tm = _require_trimesh()
     mesh = tm.Trimesh(vertices, faces, process=False)
-    tm.smoothing.filter_taubin(mesh, lamb=lamb, nu=nu, iterations=iterations)
+    tm.smoothing.filter_taubin(mesh, lamb=float(lamb), nu=float(nu), iterations=int(iterations))
     return np.asarray(mesh.vertices), np.asarray(mesh.faces, dtype=np.int32)
 
 def poisson_remesh(vertices: np.ndarray,
@@ -503,9 +525,9 @@ def poisson_remesh(vertices: np.ndarray,
     mesh.triangles = o3d.utility.Vector3iVector(faces)
     mesh.compute_vertex_normals()
 
-    pcd = mesh.sample_points_uniformly(number_of_points=number_of_points)
+    pcd = mesh.sample_points_uniformly(number_of_points=int(number_of_points))
     mesh_poisson, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        pcd, depth=depth
+        pcd, depth=int(depth)
     )
     mesh_poisson.remove_degenerate_triangles()
     mesh_poisson.remove_duplicated_triangles()
@@ -515,6 +537,33 @@ def poisson_remesh(vertices: np.ndarray,
     v = np.asarray(mesh_poisson.vertices)
     f = np.asarray(mesh_poisson.triangles, dtype=np.int32)
     return v, f
+
+def smooth_mesh(vertices: np.ndarray,
+                faces: np.ndarray,
+                method: Optional[str] = None,
+                **kwargs) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Unified smoothing entry point.
+    method: None|'laplacian'|'taubin'|'poisson'
+    kwargs: forwarded to the corresponding backend, e.g.
+            iterations=..., lamb=..., nu=..., depth=..., number_of_points=...
+    """
+    if not method or str(method).lower() in {"none", "false", "0"}:
+        return vertices, faces
+    m = str(method).lower()
+    if m == "laplacian":
+        return smooth_trimesh_laplacian(vertices, faces, iterations=kwargs.get("iterations", 5))
+    if m == "taubin":
+        return smooth_trimesh_taubin(vertices, faces,
+                                     lamb=kwargs.get("lamb", 0.9),
+                                     nu=kwargs.get("nu", 0.9),
+                                     iterations=kwargs.get("iterations", 50))
+    if m == "poisson":
+        return poisson_remesh(vertices, faces,
+                              depth=kwargs.get("depth", 8),
+                              number_of_points=kwargs.get("number_of_points", 10000))
+    raise ValueError("smoothing must be one of {None,'laplacian','taubin','poisson'}")
+
 
 # ---------- Helpers ----------
 
@@ -544,8 +593,8 @@ def _fs_aseg_to_mesh_list(aseg_path: str,
                           *,
                           colors: Optional[Dict[str, str]] = None,
                           opacity: float = 0.25,
-                          smoothing: bool = True) -> List[dict]:
-
+                          smoothing: Optional[str] = "laplacian",
+                          smoothing_kwargs: Optional[dict] = None) -> List[dict]:
     lib = ROIMeshLibrary(default_opacity=opacity, color_map=colors or {})
-    lib.extend_from_aseg(aseg_path, labels, smoothing=smoothing)
+    lib.extend_from_aseg(aseg_path, labels, smoothing=smoothing, smoothing_kwargs=smoothing_kwargs)
     return lib.to_plotly_mesh_list()

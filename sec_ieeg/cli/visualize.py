@@ -8,12 +8,10 @@ from sec_ieeg.roi import ROIMeshLibrary
 from sec_ieeg.utils import find_project_data_dir
 
 
+# ---------- Helper parsers ----------
+
 def _parse_subject_spec(specs: List[str]) -> List[dict]:
-    """
-    Parse repeated --sub entries like:
-      --sub "s1,./s1_electrode_coordinates.xlsx,mni,red"
-    Fields: subject, electrodes_path, [coord_system=mni], [color]
-    """
+    """Parse repeated --sub entries like:  --sub "s1,./s1_elec.xlsx,mni,red"."""
     out = []
     for s in specs:
         parts = [p.strip() for p in s.split(",")]
@@ -28,9 +26,7 @@ def _parse_subject_spec(specs: List[str]) -> List[dict]:
 
 
 def _parse_roi_pairs(pairs: List[str]) -> Dict[str, int]:
-    """
-    Parse repeated --roi "Name=ID" pairs.
-    """
+    """Parse repeated --roi 'Name=ID' pairs."""
     out = {}
     for p in pairs:
         if "=" not in p:
@@ -41,16 +37,14 @@ def _parse_roi_pairs(pairs: List[str]) -> Dict[str, int]:
 
 
 def _parse_kwargs(pairs: List[str]) -> dict:
-    """
-    Parse KEY=VALUE pairs into dict with int/float coercion where possible.
-    """
+    """Parse KEY=VALUE pairs into dict, coercing to int/float where possible."""
     out = {}
     for p in pairs:
         if "=" not in p:
             raise ValueError(f"Expected KEY=VALUE, got {p!r}")
         k, v = p.split("=", 1)
         v = v.strip()
-        # coerce to int/float if possible
+        # try to coerce numeric values
         try:
             if "." in v:
                 v = float(v)
@@ -62,26 +56,29 @@ def _parse_kwargs(pairs: List[str]) -> dict:
     return out
 
 
+# ---------- CLI parser ----------
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="sec-ieeg-viz",
         description="Build an interactive iEEG 3D visualization and save to HTML."
     )
-    # ---- Subjects
+
+    # Subjects
     ap.add_argument("--sub", action="append", default=[],
                     help="Subject spec: 'subject,elec.xlsx[,coord_system=mni][,color]'. Repeatable.")
     ap.add_argument("--subjects-csv", default=None,
-                    help="Alternative to --sub: CSV with columns subject,electrodes_path[,coord_system,color]")
+                    help="Alternative CSV with columns: subject,electrodes_path[,coord_system,color]")
 
-    # ---- Anatomy defaults
+    # Anatomy defaults
     ap.add_argument("--lh-pial", default=None, help="Path to lh.pial (default: fsaverage lh.pial)")
     ap.add_argument("--rh-pial", default=None, help="Path to rh.pial (default: fsaverage rh.pial)")
-    ap.add_argument("--t1", default=None, help="Path to T1 volume (default: MNI T1 from data/default)")
+    ap.add_argument("--t1", default=None, help="Path to T1 volume (default: MNI_T1.mgz)")
 
-    # ---- ROI sources (all optional)
+    # ROI sources
     ap.add_argument("--aseg", default=None, help="FreeSurfer aparc+aseg.mgz path")
     ap.add_argument("--roi", action="append", default=[],
-                    help="ROI label pair 'Name=ID'. Repeatable. (or use --roi-json)")
+                    help="ROI label pair 'Name=ID'. Repeatable.")
     ap.add_argument("--roi-json", default=None,
                     help="JSON string or file path with {name: id} mapping")
     ap.add_argument("--fs-roi-color", action="append", default=[],
@@ -90,49 +87,49 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--fs-roi-smoothing", action="store_true", default=True)
     ap.add_argument("--no-fs-roi-smoothing", action="store_false", dest="fs_roi_smoothing")
 
+    # NIfTI
     ap.add_argument("--nii-dir", default=None, help="Directory of ROI .nii/.nii.gz masks")
     ap.add_argument("--nii-thr", action="append", default=[],
-                    help="Per-ROI threshold overrides 'Name=0.4' or 'Prefix=0.4'. Repeatable.")
+                    help="Per-ROI threshold overrides 'Name=0.4'. Repeatable.")
     ap.add_argument("--nii-default-thr", type=float, default=0.4)
     ap.add_argument("--nii-special", nargs="*", default=["CnF", "RN", "PPN"],
-                    help="Names treated as scalar fields for iso-surface (default: CnF RN PPN)")
+                    help="Names treated as scalar fields (iso-surfaces).")
     ap.add_argument("--nii-smooth-iters", type=int, default=5)
 
+    # VTK
     ap.add_argument("--vtk-dir", default=None, help="Directory of .vtk ROI meshes")
-    ap.add_argument("--vtk-mirror", action="store_true", default=False,
-                    help="Mirror along X to create _r meshes")
+    ap.add_argument("--vtk-mirror", action="store_true", default=False)
     ap.add_argument("--vtk-smoothing", choices=["none", "laplacian", "taubin", "poisson"], default="none")
     ap.add_argument("--vtk-kwargs", action="append", default=[],
-                    help="Extra smoothing kwargs KEY=VALUE (repeat). E.g. depth=7 number_of_points=20000")
-    
-    ap.add_argument("--mat-dir", default=None,
-                    help="Directory of .mat files with fibers (placeholder: loads but not rendered)")
-    ap.add_argument("--mat-key", default="fibers",
-                    help="Key inside each .mat to read (default: 'fibers')")
+                    help="Extra smoothing kwargs, e.g. depth=7 number_of_points=20000")
 
+    # MAT fibers
+    ap.add_argument("--mat-dir", default=None, help="Directory of .mat fiber files")
+    ap.add_argument("--mat-key", default="fibers", help="Key inside .mat files (default: 'fibers')")
 
-    # ---- Viz options
+    # Viz
     ap.add_argument("--bgcolor", default="black")
     ap.add_argument("--marker-size", type=int, default=10)
     ap.add_argument("--line-width", type=int, default=10)
     ap.add_argument("--color-mode", choices=["by_subject", "by_electrode", "constant", "cmap"], default="by_subject")
 
-    # ---- Output
+    # Output
     ap.add_argument("--out", required=True, help="Output HTML path")
     ap.add_argument("--no-open", action="store_true", help="Do not auto-open browser")
 
     return ap
 
 
+# ---------- Main ----------
+
 def main(argv=None) -> int:
     ap = build_parser()
     args = ap.parse_args(argv)
 
-    # ---------- Subjects ----------
+    # --- Subjects ---
     subjects: List[dict] = []
     if args.subjects_csv:
         df = pd.read_csv(args.subjects_csv)
-        # normalize columns
         if "coord_system" not in df.columns:
             df["coord_system"] = "mni"
         if "color" not in df.columns:
@@ -149,23 +146,21 @@ def main(argv=None) -> int:
     if not subjects:
         ap.error("Provide subjects via --sub (repeatable) or --subjects-csv.")
 
-    # ---------- Defaults for anatomy (fsaverage & MNI T1) ----------
-    data_dir = find_project_data_dir()  # sec_ieeg/data
-    def _maybe(p, default_rel):
-        if p: return p
-        return os.path.join(data_dir, default_rel)
+    # --- Defaults for anatomy ---
+    data_dir = find_project_data_dir()
+    def _maybe(p, rel):
+        return p if p else os.path.join(data_dir, rel)
 
     lh_pial = _maybe(args.lh_pial, os.path.join("default", "fsaverage", "lh.pial"))
     rh_pial = _maybe(args.rh_pial, os.path.join("default", "fsaverage", "rh.pial"))
-    t1_path = _maybe(args.t1,      os.path.join("default", "MNI_T1.mgz"))
+    t1_path = _maybe(args.t1, os.path.join("default", "MNI_T1.mgz"))
 
-    # ---------- Build unified ROI library (optional) ----------
+    # --- Build ROI library ---
     lib = ROIMeshLibrary(default_opacity=args.fs_roi_opacity)
 
-    # FS aseg
+    # FreeSurfer aseg
     fs_roi_labels: Dict[str, int] = {}
     if args.roi_json:
-        # accept inline JSON or a file path
         if os.path.exists(args.roi_json):
             with open(args.roi_json, "r", encoding="utf-8") as f:
                 fs_roi_labels = json.load(f)
@@ -174,7 +169,7 @@ def main(argv=None) -> int:
     if args.roi:
         fs_roi_labels.update(_parse_roi_pairs(args.roi))
 
-    # Optional FS colors mapping
+    # FS colors
     fs_roi_colors = {}
     if args.fs_roi_color:
         for p in args.fs_roi_color:
@@ -182,14 +177,14 @@ def main(argv=None) -> int:
             fs_roi_colors[k.strip()] = v.strip()
         lib.color_map.update(fs_roi_colors)
 
-    # Freesurfer meshes 
     if args.aseg and fs_roi_labels:
+        smoothing = "laplacian" if args.fs_roi_smoothing else None
         lib.extend_from_aseg(
             args.aseg, fs_roi_labels,
-            smoothing=args.fs_roi_smoothing, laplacian_iters=5
+            smoothing=smoothing, smoothing_kwargs={"iterations": 5}
         )
 
-    # NIfTI meshes
+    # NIfTI directory
     if args.nii_dir:
         thr_overrides = _parse_kwargs(args.nii_thr) if args.nii_thr else {}
         lib.extend_from_nii_dir(
@@ -197,10 +192,11 @@ def main(argv=None) -> int:
             thresholds=thr_overrides,
             default_threshold=args.nii_default_thr,
             special_names=tuple(args.nii_special),
-            smoothing=True, laplacian_iters=args.nii_smooth_iters
+            smoothing="laplacian",
+            smoothing_kwargs={"iterations": args.nii_smooth_iters},
         )
 
-    # VTK meshes
+    # VTK directory
     if args.vtk_dir:
         choice = None if args.vtk_smoothing == "none" else args.vtk_smoothing
         vtk_kwargs = _parse_kwargs(args.vtk_kwargs) if args.vtk_kwargs else {}
@@ -208,10 +204,10 @@ def main(argv=None) -> int:
             args.vtk_dir,
             mirror_lr=args.vtk_mirror,
             smoothing=choice,
-            smoothing_kwargs=vtk_kwargs or None
+            smoothing_kwargs=vtk_kwargs,
         )
 
-    # MAT meshes 
+    # MAT directory (fibers)
     if args.mat_dir:
         lib.extend_from_mat_dir(args.mat_dir, key_guess=args.mat_key)
 
@@ -219,7 +215,7 @@ def main(argv=None) -> int:
     fiber_bundles = lib.get_fibers() if hasattr(lib, "get_fibers") else None
     fiber_colors = {k: lib.color_map.get(k) for k in (fiber_bundles or {}).keys()}
 
-    # ---------- Build figure ----------
+    # --- Build the figure ---
     fig = build_ieeg_figure(
         subjects=subjects,
         lh_pial=lh_pial, rh_pial=rh_pial,
@@ -233,10 +229,11 @@ def main(argv=None) -> int:
         fiber_colors=fiber_colors,
     )
 
-    # ---------- Save to HTML ----------
+    # --- Save output ---
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(args.out, include_plotlyjs="cdn", auto_open=(not args.no_open))
     print(f"[sec-ieeg-viz] wrote {args.out}")
+    return 0
 
 
 if __name__ == "__main__":

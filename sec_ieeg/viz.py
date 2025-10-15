@@ -2,10 +2,9 @@ from __future__ import annotations
 import re 
 import numpy as np
 import nibabel as nb 
-from collections import defaultdict  
-
+from collections import defaultdict, OrderedDict
 from .coords import read_subject_electrodes, extract_mni_slices
-from .roi import load_pial_mesh, _fs_aseg_to_mesh_list, smooth_trimesh
+from .roi import load_pial_mesh, _fs_aseg_to_mesh_list, smooth_mesh
 
 
 
@@ -38,6 +37,19 @@ def _pretty_elname(full: str) -> str:
         return el
 
 # ---------- helpers ----------
+def _resolve_smoothing(spec, *, default: str = "laplacian") -> str | None:
+    """
+    Accepts: True/False/None or a backend string.
+    Returns: 'laplacian' | 'taubin' | 'poisson' | None
+    """
+    if spec is True:
+        return default
+    if spec in (False, None):
+        return None
+    m = str(spec).lower().strip()
+    if m in {"laplacian", "taubin", "poisson"}:
+        return m
+    raise ValueError("fs_roi_smoothing must be True/False/None or one of {'laplacian','taubin','poisson'}")
 
 def pretty_roi_name(name: str) -> str:
     """
@@ -550,7 +562,9 @@ def build_ieeg_figure(
     camera_eye: dict | None = None, font_family: str = "Cambria", font_size: int = 16,
     # --- ROI meshes ---
     roi_meshes: list[dict] | None = None,
-    roi_smooth_iters: int | None = None,
+    roi_smooth_iters: int | None = None,        
+    roi_smoothing: str | None = None,          
+    roi_smoothing_kwargs: dict | None = None, 
     show_roi_meshes: bool = True,
     fiber_bundles: dict[str, np.ndarray] | None = None,
     fiber_colors: dict[str, str] | None = None,
@@ -561,7 +575,8 @@ def build_ieeg_figure(
     fs_roi_labels: dict[str, int] | None = None,
     fs_roi_colors: dict[str, str] | None = None,
     fs_roi_opacity: float = 0.25,
-    fs_roi_smoothing: bool = True,
+    fs_roi_smoothing: bool | str | None = "laplacian",   # True -> default backend; str -> explicit backend; False/None -> off
+    fs_roi_smoothing_kwargs: dict | None = None,
     # --- Legend/panel layout ---
     panel_x: float = 1.015,
     panel_y: float = 1.00,
@@ -804,13 +819,15 @@ def build_ieeg_figure(
 
         # FS aseg -> optional merge
         if freesurfer_aseg and fs_roi_labels:
+            fs_method = _resolve_smoothing(fs_roi_smoothing, default="laplacian")
             merged_roi_meshes.extend(
                 _fs_aseg_to_mesh_list(
                     freesurfer_aseg,
                     fs_roi_labels,
                     colors=fs_roi_colors,
                     opacity=fs_roi_opacity,
-                    smoothing=fs_roi_smoothing,
+                    smoothing=fs_method,                     
+                    smoothing_kwargs=fs_roi_smoothing_kwargs,
                 )
             )
 
@@ -821,40 +838,38 @@ def build_ieeg_figure(
             fiber_colors,
         )
 
+        
         if merged_roi_meshes or fiber_bundles:
-            group = "ROI meshes"
 
-            def _maybe_smooth(v, f, iters):
-                try:
-                    return smooth_trimesh(v, f, iterations=iters) if (iters and iters > 0) else (v, f)
-                except NameError:
-                    return (v, f)
+            group = "ROI meshes"
 
             # ---- Mesh ROIs ----
             for r in merged_roi_meshes:
                 v = np.asarray(r["vertices"], float)
                 f = np.asarray(r["faces"], int)
-                v, f = _maybe_smooth(v, f, roi_smooth_iters)
+
+                if roi_smoothing:
+                    v, f = smooth_mesh(v, f, method=roi_smoothing, **(roi_smoothing_kwargs or {}))
 
                 display_name = pretty_roi_name(r.get("name", "ROI"))
-                face_color = r.get("color", "tomato")
+                face_color   = r.get("color", "tomato")
                 face_opacity = float(r.get("opacity", fs_roi_opacity))
 
                 fig.add_trace(go.Mesh3d(
                     x=v[:, 0], y=v[:, 1], z=v[:, 2],
                     i=f[:, 0], j=f[:, 1], k=f[:, 2],
-                    color=face_color,
-                    opacity=face_opacity,
+                    color=face_color, opacity=face_opacity,
                     name=display_name,
                     lighting=dict(ambient=0.25, diffuse=0.3, specular=0.2),
                 ))
                 idx = len(fig.data) - 1
-                group_indices[group].append(idx)
-                item_indices[group].append((display_name, [idx]))
+                group_indices["ROI meshes"].append(idx)
+                item_indices["ROI meshes"].append((display_name, [idx]))
+
 
             # ---- Fibers (.mat) ----
             if fiber_bundles:
-                # default fiber opacity: follow mesh default if not specified
+              
                 f_opac = fs_roi_opacity if fiber_opacity is None else float(fiber_opacity)
                 for raw_name, arr in fiber_bundles.items():
                     M = np.asarray(arr)
@@ -864,7 +879,6 @@ def build_ieeg_figure(
                     pts = M[:, :3]
                     ids = M[:, 3] if M.shape[1] >= 4 else np.zeros(len(pts))
 
-                    # build a single polyline with None breaks between fiber_ids
                     order = np.argsort(ids, kind="mergesort")
                     pts = pts[order]; ids = ids[order]
                     breaks = np.where(np.diff(ids) != 0)[0] + 1

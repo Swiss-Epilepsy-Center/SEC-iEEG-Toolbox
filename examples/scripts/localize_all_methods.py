@@ -21,7 +21,7 @@ def main():
         "Left-Hippocampus": 17, "Right-Hippocampus": 53,
         "Left-Amygdala": 18,    "Right-Amygdala": 54,
     }
-    meshes = extract_roi_trimeshes(str(aseg), fs_roi_labels, step_size=1, apply_smoothing=True)
+    meshes = extract_roi_trimeshes(str(aseg), fs_roi_labels, step_size=1, smoothing="laplacian")
 
     df_surface  = assign_electrodes(method="surface",  dataloader=dl, roi_trimeshes=meshes)
     df_centroid = assign_electrodes(method="centroid", dataloader=dl, roi_trimeshes=meshes)
